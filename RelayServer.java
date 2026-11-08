@@ -168,42 +168,63 @@ public class RelayServer {
     private void proxy(OutputStream o, Map<String, String> h, String id, boolean head) throws IOException {
         LinkStore.Item it = store.get(id);
         if (it == null) { sendSimple(o, 404, "Not Found", "text/plain", "unknown id".getBytes(), null, head); return; }
+        final String etag = "\"" + it.id + "-" + it.size + "\"";      // ETag ثابت وقوي نصنعه نحن: يضمن عمل الاستئناف حتى لو لم يوفره الموقع
         String range = it.ranges ? h.get("range") : null;
-        String ifr = range != null ? h.get("if-range") : null;
+        String ifr = h.get("if-range");
+        if (range != null && ifr != null && !ifr.equals(etag)) range = null;   // الملف اختلف عن نسخة العميل ⇒ نرسله كاملًا
+        long start = 0;
+        boolean openEnd = false;
+        if (range != null) {
+            java.util.regex.Matcher m = java.util.regex.Pattern.compile("^bytes=(\\d+)-$").matcher(range.trim());
+            if (m.find()) { start = Long.parseLong(m.group(1)); openEnd = true; }
+            if (openEnd && start >= it.size) {
+                Map<String, String> ex = new HashMap<String, String>();
+                ex.put("Content-Range", "bytes */" + it.size);
+                sendSimple(o, 416, "Range Not Satisfiable", "text/plain", new byte[0], ex, true);
+                return;
+            }
+        }
         HttpURLConnection c;
         try {
-            c = Origin.open(it.url, range, ifr, head);
+            c = Origin.open(it.url, range, null, head);     // لا نمرّر If-Range: الموقع لا يعرف ETag الخاص بنا
         } catch (IOException e) {
             sendSimple(o, 502, "Bad Gateway", "text/plain", "origin unreachable".getBytes(), null, head);
             return;
         }
         try {
             int code = c.getResponseCode();
-            if (code == 416) {
-                Map<String, String> ex = new HashMap<String, String>();
-                ex.put("Content-Range", "bytes */" + it.size);
-                sendSimple(o, 416, "Range Not Satisfiable", "text/plain", new byte[0], ex, true);
-                return;
-            }
             long cl = c.getContentLengthLong();
-            if ((code != 200 && code != 206) || cl < 0) {
-                sendSimple(o, 502, "Bad Gateway", "text/plain", ("origin " + code).getBytes(), null, head);
+            String why = null;
+            long expect = (range != null && openEnd) ? it.size - start : it.size;
+            if (code == 416) why = "origin 416";
+            else if (range != null && code != 206) why = "origin ignored Range (" + code + ")";
+            else if (range == null && code != 200) why = "origin status " + code;
+            else if (cl < 0) why = "origin gave no length";
+            else if (cl != expect) why = "origin length " + cl + " != expected " + expect;
+            else if (code == 206) {
+                String cr = c.getHeaderField("Content-Range");
+                if (cr == null || !cr.matches("bytes " + start + "-\\d+/" + it.size)) why = "origin Content-Range mismatch: " + cr;
+            }
+            String ct = c.getContentType();
+            if (why == null && ct != null && ct.toLowerCase().contains("text/html")) why = "origin returned a web page";
+            if (why != null) {
+                sendSimple(o, 502, "Bad Gateway", "text/plain", why.getBytes("UTF-8"), null, head);
                 return;
             }
             StringBuilder sb = new StringBuilder("HTTP/1.0 " + code + (code == 206 ? " Partial Content" : " OK") + "\r\n");
             sb.append("Content-Type: application/octet-stream\r\nContent-Length: ").append(cl).append("\r\n");
-            for (String k : new String[]{"Content-Range", "ETag", "Last-Modified"}) {
-                String v = c.getHeaderField(k);
-                if (v != null) sb.append(k).append(": ").append(v).append("\r\n");
-            }
+            sb.append("ETag: ").append(etag).append("\r\n");
+            if (code == 206) sb.append("Content-Range: bytes ").append(start).append('-').append(it.size - 1).append('/').append(it.size).append("\r\n");
             if (it.ranges) sb.append("Accept-Ranges: bytes\r\n");
             sb.append("\r\n");
             o.write(sb.toString().getBytes("ISO-8859-1"));
             if (!head) {
                 InputStream in = c.getInputStream();
-                byte[] buf = new byte[65536];
+                byte[] buf = new byte[262144];
+                long sent = 0;
                 int n;
-                while ((n = in.read(buf)) > 0) o.write(buf, 0, n);
+                while ((n = in.read(buf)) > 0) { o.write(buf, 0, n); sent += n; }
+                // إن انقطع الموقع قبل الاكتمال نغلق الاتصال فيعيد الـ PS4 المحاولة ويستأنف من حيث وصل
             }
             o.flush();
         } finally {
