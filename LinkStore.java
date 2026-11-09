@@ -13,7 +13,7 @@ import java.util.regex.Pattern;
 /** قائمة الروابط المضافة. التخزين نصي بسيط (سطر لكل رابط، حقول مفصولة بـ TAB). */
 public class LinkStore {
     public static class Item {
-        public String id, title, file, url;
+        public String id, title, file, url, contentId = "";
         public long size, ts;
         public boolean ranges;
     }
@@ -37,6 +37,7 @@ public class LinkStore {
                 Item it = new Item();
                 it.id = f[0]; it.title = f[1]; it.file = f[2]; it.size = Long.parseLong(f[3]);
                 it.ranges = "1".equals(f[4]); it.ts = Long.parseLong(f[5]); it.url = f[6];
+                it.contentId = f.length > 7 ? f[7] : "";
                 items.add(it);
             } catch (NumberFormatException ignored) { }
         }
@@ -49,7 +50,7 @@ public class LinkStore {
         StringBuilder sb = new StringBuilder();
         for (Item it : items)
             sb.append(clean(it.id)).append('\t').append(clean(it.title)).append('\t').append(clean(it.file)).append('\t')
-              .append(it.size).append('\t').append(it.ranges ? "1" : "0").append('\t').append(it.ts).append('\t').append(clean(it.url)).append('\n');
+              .append(it.size).append('\t').append(it.ranges ? "1" : "0").append('\t').append(it.ts).append('\t').append(clean(it.url)).append('\t').append(clean(it.contentId)).append('\n');
         persist.save(sb.toString());
     }
 
@@ -72,6 +73,28 @@ public class LinkStore {
             for (int i = 0; i < 5; i++) sb.append(String.format("%02x", d[i]));
             return sb.toString();
         } catch (Exception e) { throw new IOException(e); }
+    }
+
+    /** يقرأ Content ID من ترويسة PKG (أول 256 بايت). فارغ إن لم يكن PKG لـ PS4 أو تعذّرت القراءة. */
+    static String readContentId(String url) {
+        try {
+            HttpURLConnection c = Origin.open(url, "bytes=0-255", null, false);
+            try {
+                if (c.getResponseCode() >= 400) return "";
+                java.io.InputStream in = c.getInputStream();
+                byte[] b = new byte[256];
+                int n = 0, r;
+                while (n < b.length && (r = in.read(b, n, b.length - n)) > 0) n += r;
+                if (n < 0x64 || b[0] != 0x7F || b[1] != 'C' || b[2] != 'N' || b[3] != 'T') return "";
+                StringBuilder sb = new StringBuilder();
+                for (int i = 0x40; i < 0x40 + 36 && b[i] != 0; i++) {
+                    char ch = (char) (b[i] & 0xFF);
+                    if (!(Character.isLetterOrDigit(ch) || ch == '-' || ch == '_')) return "";
+                    sb.append(ch);
+                }
+                return sb.toString();
+            } finally { c.disconnect(); }
+        } catch (Exception e) { return ""; }
     }
 
     /** يتحقق من الرابط (حجم، دعم الاستئناف، الاسم) ثم يضيفه. يرمي IOException برسالة مفهومة. */
@@ -109,6 +132,7 @@ public class LinkStore {
                 try { name = URLDecoder.decode(name, "UTF-8"); } catch (Exception ignored) { }
             }
             Item it = new Item();
+            it.contentId = readContentId(url);
             it.id = sha1(url);
             it.url = url;
             it.size = size;
