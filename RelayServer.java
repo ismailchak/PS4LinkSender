@@ -149,7 +149,8 @@ public class RelayServer {
                     sb.append("{\"id\":\"").append(esc(it.id)).append("\",\"title\":\"").append(esc(it.title))
                       .append("\",\"description\":\"\",\"version\":\"1.0\",\"size_bytes\":").append(it.size)
                       .append(",\"category\":\"Links\",\"added_ts\":").append(it.ts).append(",\"cover_url\":\"\",\"download_url\":\"")
-                      .append(base).append("/dl/").append(esc(it.id)).append('/').append(esc(safeName(it.file))).append("\",\"sha256\":\"\",\"direct_url\":\"").append(esc(it.url))
+                      .append(esc(it.url)).append("\",\"sha256\":\"\",\"direct_url\":\"").append(esc(it.url))
+                      .append("\",\"relay_url\":\"").append(base).append("/dl/").append(esc(it.id)).append('/').append(esc(safeName(it.file)))
                       .append("\",\"content_id\":\"").append(esc(it.contentId == null ? "" : it.contentId)).append("\"}");
                 }
                 sb.append("]}");
